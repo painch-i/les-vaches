@@ -1,65 +1,11 @@
-// Constantes
-const PLAYER_COUNT = 4;
-const CARD_COUNT = 104;
-const PLAYER_HAND_SIZE = 10;
-const MAX_ROW_SIZE = 5;
-const MAX_COW_COUNT = 66;
+import { Card, cards } from "./cards";
+import { MAX_COW_COUNT, MAX_ROW_SIZE, PLAYER_COUNT, PLAYER_HAND_SIZE } from "./config";
+import { Player, playerActions, players } from "./players";
 
 // Types
-type Card = {
-  index: number;
-  cowCount: number;
-};
-
-type Player = {
-  index: number;
-  hand: Card[];
-  cowCount: number;
-};
-
 type CardChoice = {
   playerIndex: number;
   card: Card;
-}
-
-type PlayerCardChoices = {
-  [playerIndex: number]: Card;
-};
-
-// Utilitaires
-function shuffleDeck(deck: Card[]): Card[] {
-  const randomValues = new Uint32Array(deck.length);
-  crypto.getRandomValues(randomValues);
-  
-  for (let i = deck.length - 1; i > 0; i--) {
-    const j = randomValues[i] % (i + 1);
-    [deck[i], deck[j]] = [deck[j], deck[i]];
-  }
-  
-  return deck;
-}
-
-function pickCardFrom(from: Card[], cardIndex?: number): Card {
-  let card: Card | undefined;
-  if (cardIndex === undefined) {
-    card = from.pop();
-  } else {
-    card = from.splice(cardIndex, 1)[0];
-  }
-  if (!card) {
-    throw new Error('No card to pick');
-  }
-  return card;
-}
-
-type MoveCardOptions = {
-  from: Card[];
-  fromCardIndex?: number;
-  to: Card[];
-};
-function moveCard({ from, fromCardIndex, to }: MoveCardOptions) {
-  const card = pickCardFrom(from, fromCardIndex);
-  to.push(card);
 }
 
 function sendCowsToPlayer(player: Player, row: Card[]) {
@@ -67,12 +13,25 @@ function sendCowsToPlayer(player: Player, row: Card[]) {
   row.length = 0;
 }
 
-function getBoardRowsLastCards() {
-  return board.map(row => row[row.length - 1]).sort((a, b) => a.index - b.index);
+function emptyPlayerHands() {
+  for (const player of players) {
+    player.hand = [];
+  }
 }
 
-function sortBoardRows() {
-  board.sort((a, b) => a[a.length - 1].index - b[b.length - 1].index);
+function initializeBoard() {
+  board = Array.from({ length: 4 }, () => {
+    const row: Card[] = [];
+    cards.moveCard({
+      from: deck,
+      to: row
+    });
+    return row;
+  });
+}
+
+function getBoardRowsLastCards() {
+  return board.map(row => row[row.length - 1]).sort((a, b) => a.index - b.index);
 }
 
 // Fonction de journalisation
@@ -81,10 +40,6 @@ let log: string[] = [];
 function logEvent(event: string) {
   console.log(event);
   log.push(event);
-}
-
-function printLog() {
-  console.log(log.join('\n'));
 }
 
 // Fonction de visualisation de l'état du jeu
@@ -100,56 +55,36 @@ function printGameState() {
   });
 }
 
-const players: Player[] = Array.from({ length: PLAYER_COUNT }, (_, index) => ({
-  index,
-  cowCount: 0,
-  hand: []
-}));
-
 let looser: Player | null = null;
-
 let board: Card[][] = [];
-let deck: Card[] = [];
+const deck = cards.deck;
 let leaderBoard: Player[] = [];
 
 
 while (looser === null) {
-  // Initialisation
-  deck = Array.from({ length: CARD_COUNT }, (_, index) => ({
-    index,
-    cowCount: 3,
-  }));
-  deck = shuffleDeck(deck);
+  // Mélange du deck
+  cards.shuffleDeck();
   
-  board = Array.from({ length: 4 }, () => {
-    const row: Card[] = [];
-    moveCard({
-      from: deck,
-      to: row
-    });
-    return row;
-  });
-  sortBoardRows();
+  // Initialisation des cartes du plateau
+  initializeBoard();
   
   // Distribution des cartes
-  for (let i = 0; i < players.length; i++) {
-    players[i].hand = [];
-  }
+  emptyPlayerHands();
   for (let i = 0; i < PLAYER_HAND_SIZE; i++) {
     for (const player of players) {
-      moveCard({
+      cards.moveCard({
         from: deck,
         to: player.hand
       });
     }
   }
   
-  // Tour de jeu
+  // Tours de jeu
   for (let i = 0; i < PLAYER_HAND_SIZE; i++) {
     printGameState();
     const playerCardChoices: CardChoice[] = [];
     for (let i = 0; i < PLAYER_COUNT; i++) {
-      const chosenCard = pickCardFrom(players[i].hand);
+      const chosenCard = playerActions.chooseCard(players[i]);
       playerCardChoices[i] = {
         playerIndex: i,
         card: chosenCard,
@@ -181,11 +116,10 @@ while (looser === null) {
       }
       
       // On place la carte choisie dans la rangée
-      moveCard({
+      cards.moveCard({
         from: [chosenCard],
         to: board[row]
       });
-      sortBoardRows();
       logEvent(`Player ${player.index} placed card ${chosenCard.index} in row ${row}`);
       printGameState();
     }
