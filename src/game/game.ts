@@ -27,12 +27,6 @@ function sendCowsToPlayer(player: Player, row: Card[]) {
   row.length = 0;
 }
 
-function emptyPlayerHands() {
-  for (const player of players) {
-    player.hand = [];
-  }
-}
-
 const timeouts: NodeJS.Timeout[] = [];
 
 async function waitForPlayerTimeout(player: Player) {
@@ -108,7 +102,7 @@ function validateRowChoice(row: number) {
 
 type PromptPlayerOptions<R> = {
   player: Player;
-  promptFn: () => Promise<R> | R;
+  promptFn: (implementation: IGameImplementation) => Promise<R> | R;
   fallbackFn: () => Promise<R> | R;
   validateFn?: (result: R) => void;
 }
@@ -119,7 +113,11 @@ async function promptPlayer<R>(options: PromptPlayerOptions<R>): Promise<R> {
     const result = await options.fallbackFn();
     return result;
   }
-  const promptResult = await Promise.race([options.promptFn(), waitForPlayerTimeout(player)]);
+  const implementation = implementationByPlayerId.get(player.realPlayerId);
+  if (!implementation) {
+    throw new Error("No implementation found for player");
+  }
+  const promptResult = await Promise.race([options.promptFn(implementation), waitForPlayerTimeout(player)]);
   let result: R;
   if (promptResult !== undefined) {
     try {
@@ -140,12 +138,31 @@ let looser: Player | null = null;
 let board: Board = [];
 let leaderBoard: Player[] = [];
 let stillPlaying = true;
+const implementationByPlayerId: Map<string, IGameImplementation> = new Map();
 
 function atLeastOneRealPlayer() {
   return players.some(player => player.realPlayerId !== null);
 }
 
-export async function startGame(implementation: IGameImplementation = cli) {
+export async function startGame(implementations: IGameImplementation[] = [cli]) {
+  for (const implementation of implementations) {
+    implementation.onRealPlayerJoin((realPlayerId) => {
+      let player = players.find(player => player.realPlayerId === realPlayerId);
+      if (!player) {
+        player = players.find(player => player.realPlayerId === null);
+        if (player) {
+          player.realPlayerId = realPlayerId;
+        }
+      }
+      implementationByPlayerId.set(realPlayerId, implementation);
+    });
+    implementation.onRealPlayerNameChange((realPlayerId, name) => {
+      const player = players.find(player => player.realPlayerId === realPlayerId);
+      if (player) {
+        player.name = name;
+      }
+    });
+  }
   while (stillPlaying) {
     if (atLeastOneRealPlayer() === false) {
       await waitForNewPlayer();
@@ -178,17 +195,13 @@ export async function startGame(implementation: IGameImplementation = cli) {
         for (let i = 0; i < PLAYER_COUNT; i++) {
           const player = players[i];
           let chosenCard: Card;
-          if (player.realPlayerId === null) {
-            chosenCard = playerActions.chooseCard(player);
-          } else {
-            const chosenCardHandIndex = await promptPlayer({
-              player,
-              promptFn: () => implementation.promptPlayerCardChoice(player, board),
-              validateFn: (handIndex) => validateCardChoice(player, handIndex),
-              fallbackFn: () => Math.floor(Math.random() * player.hand.length)
-            });
-            chosenCard = cards.pickCardFrom(player.hand, chosenCardHandIndex);
-          }
+          const chosenCardHandIndex = await promptPlayer({
+            player,
+            promptFn: (implementation) => implementation.promptPlayerCardChoice(player, board),
+            validateFn: (handIndex) => validateCardChoice(player, handIndex),
+            fallbackFn: () => Math.floor(Math.random() * player.hand.length)
+          });
+          chosenCard = cards.pickCardFrom(player.hand, chosenCardHandIndex);
           playerCardChoices[i] = {
             playerIndex: i,
             card: chosenCard,
@@ -211,7 +224,7 @@ export async function startGame(implementation: IGameImplementation = cli) {
           if (row === -1) {
             row = await promptPlayer({
               player,
-              promptFn: () => implementation.promptPlayerRowChoice(player, board),
+              promptFn: (implementation) => implementation.promptPlayerRowChoice(player, board),
               validateFn: (row) => validateRowChoice(row),
               fallbackFn: () => Math.floor(Math.random() * board.length)
             })
@@ -247,7 +260,9 @@ export async function startGame(implementation: IGameImplementation = cli) {
     leaderBoard.forEach(player => {
       customLog(`${player.name}: ${player.cowCount} cows`);
     });
-    implementation.onGameEnd();
+    for (const implementation of implementations) {
+      implementation.onGameEnd();
+    }
     for (const timeout of timeouts) {
       clearTimeout(timeout);
     }
@@ -256,7 +271,7 @@ export async function startGame(implementation: IGameImplementation = cli) {
       if (player.realPlayerId !== null) {
         const isPlayerStillPlaying = await promptPlayer({
           player,
-          promptFn: implementation.promptToPlayAgain,
+          promptFn: (implementation) => implementation.promptToPlayAgain(),
           fallbackFn: () => false
         });
         if (isPlayerStillPlaying) {
