@@ -5,19 +5,21 @@ export type Card = {
   cowCount: number;
 };
 
+export type Board = Card[][];
+
 export type Deck = Card[];
 
-let deck: Deck = createDeck();
-
 function createDeck(): Deck {
-  return Array.from({ length: CARD_COUNT }, (_, index) => ({
+  const deck = Array.from({ length: CARD_COUNT + 1 }, (_, index) => ({
     index,
     cowCount: 3,
   }));
+  deck.shift();
+  return deck;
 }
 
-function shuffleDeck() {
-  deck = createDeck();
+function getShuffledDeck() {
+  const deck = createDeck();
   const randomValues = new Uint32Array(deck.length);
   crypto.getRandomValues(randomValues);
   
@@ -25,6 +27,7 @@ function shuffleDeck() {
     const j = randomValues[i] % (i + 1);
     [deck[i], deck[j]] = [deck[j], deck[i]];
   }
+  return deck;
 }
 
 function pickCardFrom(from: Card[], cardIndex?: number): Card {
@@ -51,8 +54,7 @@ function moveCard({ from, fromCardIndex, to }: MoveCardOptions) {
 }
 
 export const cards = {
-  deck,
   pickCardFrom,
-  shuffleDeck,
+  getShuffledDeck,
   moveCard,
 }
