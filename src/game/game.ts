@@ -1,8 +1,9 @@
 import { cli } from "../implementations/cli";
+import { socketIO } from "../implementations/socket-io";
 import { Board, Card, cards, Deck } from "./cards";
 import { MAX_COW_COUNT, MAX_ROW_SIZE, PLAYER_COUNT, PLAYER_HAND_SIZE, PLAYER_TIMEOUT } from "./config";
 import { IGameImplementation } from "./game-implementation.interface";
-import { Player, playerActions, players } from "./players";
+import { Player, playerActions, players, RealPlayer } from "./players";
 
 function customLog(log: string) {
   // if (players[0].realPlayerId === null) {
@@ -27,21 +28,29 @@ function sendCowsToPlayer(player: Player, row: Card[]) {
   row.length = 0;
 }
 
-const timeouts: NodeJS.Timeout[] = [];
+const timeoutsByPlayer= new Map<string, NodeJS.Timeout>();
 
-async function waitForPlayerTimeout(player: Player) {
+async function waitForPlayerTimeout(player: RealPlayer) {
   return new Promise<void>(resolve => {
+    const existingTimeout = timeoutsByPlayer.get(player.realPlayerId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+    }
     const timeout = setTimeout(() => {
-      player.realPlayerId = null;
+      (player as Player).realPlayerId = null;
       resolve();
     }, PLAYER_TIMEOUT);
-    timeouts.push(timeout);
+    timeoutsByPlayer.set(player.realPlayerId, timeout);
   });
 }
 
 function waitForNewPlayer() {
-  return new Promise<string>(resolve => {
-    cli.onRealPlayerJoin(resolve);
+  return new Promise<void>(resolve => {
+    for (const implementation of implementations) {
+      implementation.onRealPlayerJoin(() => {
+        resolve();
+      });
+    }
   });
 }
 
@@ -102,7 +111,7 @@ function validateRowChoice(row: number) {
 
 type PromptPlayerOptions<R> = {
   player: Player;
-  promptFn: (implementation: IGameImplementation) => Promise<R> | R;
+  promptFn: (implementation: IGameImplementation, realPlayer: RealPlayer) => PromiseLike<R>;
   fallbackFn: () => Promise<R> | R;
   validateFn?: (result: R) => void;
 }
@@ -113,11 +122,12 @@ async function promptPlayer<R>(options: PromptPlayerOptions<R>): Promise<R> {
     const result = await options.fallbackFn();
     return result;
   }
-  const implementation = implementationByPlayerId.get(player.realPlayerId);
+  const realPlayer = player as RealPlayer;
+  const implementation = implementationByPlayerId.get(realPlayer.realPlayerId);
   if (!implementation) {
     throw new Error("No implementation found for player");
   }
-  const promptResult = await Promise.race([options.promptFn(implementation), waitForPlayerTimeout(player)]);
+  const promptResult = await Promise.race([options.promptFn(implementation, realPlayer), waitForPlayerTimeout(realPlayer)]);
   let result: R;
   if (promptResult !== undefined) {
     try {
@@ -134,39 +144,62 @@ async function promptPlayer<R>(options: PromptPlayerOptions<R>): Promise<R> {
   return result;
 }
 
-let looser: Player | null = null;
-let board: Board = [];
-let leaderBoard: Player[] = [];
-let stillPlaying = true;
-const implementationByPlayerId: Map<string, IGameImplementation> = new Map();
-
 function atLeastOneRealPlayer() {
   return players.some(player => player.realPlayerId !== null);
 }
 
-export async function startGame(implementations: IGameImplementation[] = [cli]) {
+function refreshPlayerGameStates() {
+  printGameState();
   for (const implementation of implementations) {
-    implementation.onRealPlayerJoin((realPlayerId) => {
-      let player = players.find(player => player.realPlayerId === realPlayerId);
-      if (!player) {
-        player = players.find(player => player.realPlayerId === null);
-        if (player) {
-          player.realPlayerId = realPlayerId;
+    for (const player of players) {
+      if (player.realPlayerId !== null) {
+        implementation.onPlayerGameStateChange(playerActions.getPlayerGameState(player.realPlayerId));
+      }
+    }
+  }
+}
+
+let looser: Player | null = null;
+let board: Board = [];
+let leaderBoard: Player[] = [];
+let stillPlaying = true;
+const implementations = [cli, socketIO];
+const implementationByPlayerId: Map<string, IGameImplementation> = new Map();
+
+for (const implementation of implementations) {
+  implementation.onRealPlayerJoin(({ playerId, playerName }) => {
+    // Try to find existing player
+    let player = players.find(player => player.realPlayerId === playerId);
+    if (!player) {
+      // Find first player with no realPlayerId
+      player = players.find(player => player.realPlayerId === null);
+      if (player) {
+        player.realPlayerId = playerId;
+        if (playerName) {
+          player.name = playerName;
         }
       }
-      implementationByPlayerId.set(realPlayerId, implementation);
-    });
-    implementation.onRealPlayerNameChange((realPlayerId, name) => {
-      const player = players.find(player => player.realPlayerId === realPlayerId);
-      if (player) {
-        player.name = name;
-      }
-    });
-  }
+    }
+    console.log(`${playerName ? playerName : `Player ${playerId}`} joined`);
+    implementationByPlayerId.set(playerId, implementation);
+  });
+  implementation.onRealPlayerNameChange(({ playerId, playerName }) => {
+    const player = players.find(player => player.realPlayerId === playerId);
+    if (player) {
+      player.name = playerName;
+      console.log(`${player.name} changed name to ${playerName}`);
+    }
+  });
+}
+
+
+export async function startGame() {
   while (stillPlaying) {
     if (atLeastOneRealPlayer() === false) {
+      console.log("No real players. Waiting for new player.");
       await waitForNewPlayer();
     }
+    console.log("Starting game");
     playerActions.resetPlayers();
     looser = null;
     board = [];
@@ -187,17 +220,19 @@ export async function startGame(implementations: IGameImplementation[] = [cli]) 
           });
         }
       }
-    
+
+
       // Tours de jeu
       for (let i = 0; i < PLAYER_HAND_SIZE; i++) {
-        printGameState();
+        refreshPlayerGameStates();
         const playerCardChoices: CardChoice[] = [];
         for (let i = 0; i < PLAYER_COUNT; i++) {
           const player = players[i];
           let chosenCard: Card;
+          logEvent(`${player.name} has to choose a card`);
           const chosenCardHandIndex = await promptPlayer({
             player,
-            promptFn: (implementation) => implementation.promptPlayerCardChoice(player, board),
+            promptFn: (implementation, realPlayer) => implementation.promptPlayerCardChoice(realPlayer, board),
             validateFn: (handIndex) => validateCardChoice(player, handIndex),
             fallbackFn: () => Math.floor(Math.random() * player.hand.length)
           });
@@ -220,11 +255,12 @@ export async function startGame(implementations: IGameImplementation[] = [cli]) 
               row++;
             }
           }
-          // Si la carte est plus petite que toutes les cartes du plateau, on la place dans une rangée aléatoire et on envoie les vaches au joueur
+          // Si la carte est plus petite que toutes les cartes du plateau, on demande au joueur de choisir une rangée
           if (row === -1) {
+            logEvent(`${player.name} chose card ${chosenCard.index} and has to choose a row`);
             row = await promptPlayer({
               player,
-              promptFn: (implementation) => implementation.promptPlayerRowChoice(player, board),
+              promptFn: (implementation, realPlayer) => implementation.promptPlayerRowChoice(realPlayer, board),
               validateFn: (row) => validateRowChoice(row),
               fallbackFn: () => Math.floor(Math.random() * board.length)
             })
@@ -242,10 +278,8 @@ export async function startGame(implementations: IGameImplementation[] = [cli]) 
             to: board[row]
           });
           logEvent(`${player.name} placed card ${chosenCard.index} in row ${row}`);
-          printGameState();
         }
       }
-      printGameState();
       // Vérification de l'existance d'un looser
       const looserIndex = players.findIndex(player => player.cowCount >= MAX_COW_COUNT);
       if (looserIndex !== -1) {
@@ -260,18 +294,14 @@ export async function startGame(implementations: IGameImplementation[] = [cli]) 
     leaderBoard.forEach(player => {
       customLog(`${player.name}: ${player.cowCount} cows`);
     });
-    for (const implementation of implementations) {
-      implementation.onGameEnd();
-    }
-    for (const timeout of timeouts) {
-      clearTimeout(timeout);
-    }
+
     const playersStillPlaying: Player[] = [];
     for (const player of players) {
       if (player.realPlayerId !== null) {
+        logEvent(`Prompting ${player.name} to play again`);
         const isPlayerStillPlaying = await promptPlayer({
           player,
-          promptFn: (implementation) => implementation.promptToPlayAgain(),
+          promptFn: (implementation, realPlayer) => implementation.promptToPlayAgain(realPlayer),
           fallbackFn: () => false
         });
         if (isPlayerStillPlaying) {
@@ -282,6 +312,12 @@ export async function startGame(implementations: IGameImplementation[] = [cli]) 
     if (playersStillPlaying.length === 0) {
       console.log("No players left. Game over.");
       stillPlaying = false;
+      for (const implementation of implementations) {
+        await implementation.onGameEnd();
+      }
+    }
+    for (const timeout of timeoutsByPlayer.values()) {
+      clearTimeout(timeout);
     }
   }
 }

@@ -79,16 +79,16 @@ function promptToPlayAgain(): Promise<boolean> {
   return prompt;
 }
 
-function onGameEnd(): void {
+async function onGameEnd() {
   prompts.forEach(prompt => prompt.cancel());
   prompts.length = 0;
 }
 
 const currentUserId = 'cli';
-promptPlayerName().then(name => {
-  onPlayerJoinCallbacks.forEach(callback => callback(currentUserId));
-  onPlayerNameChangeCallbacks.forEach(callback => callback(currentUserId, name));
-});
+// promptPlayerName().then(name => {
+//   onPlayerJoinCallbacks.forEach(callback => callback(currentUserId));
+//   onPlayerNameChangeCallbacks.forEach(callback => callback(currentUserId, name));
+// });
 
 
 export const cli: IGameImplementation = {
@@ -98,5 +98,6 @@ export const cli: IGameImplementation = {
   onRealPlayerNameChange,
   onGameEnd,
   promptToPlayAgain,
+  onPlayerGameStateChange: () => {},
 };
 

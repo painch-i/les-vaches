@@ -1,14 +1,21 @@
 import { Board } from "./cards";
-import { Player } from "./players";
+import { PlayerGameState, RealPlayer } from "./players";
 
-export type onPlayerJoinPlayerCallback = (realPlayerId: string) => void;
-export type onPlayerNameChangeCallback = (realPlayerId: string, newName: string) => void;
+export type onPlayerJoinPlayerCallback = (realPlayerJoinData: {
+  playerId: string;
+  playerName?: string;
+}) => void;
+export type onPlayerNameChangeCallback = (realPlayerUpdateNameData: {
+  playerId: string,
+  playerName: string,
+}) => void;
 
 export interface IGameImplementation {
-  promptPlayerCardChoice(player: Player, board: Board): Promise<number>;
-  promptPlayerRowChoice(player: Player, board: Board): Promise<number>;
-  promptToPlayAgain(): Promise<boolean>;
+  promptPlayerCardChoice(player: RealPlayer, board: Board): PromiseLike<number>;
+  promptPlayerRowChoice(player: RealPlayer, board: Board): PromiseLike<number>;
+  promptToPlayAgain(player: RealPlayer): PromiseLike<boolean>;
   onRealPlayerJoin(callback: onPlayerJoinPlayerCallback): void;
   onRealPlayerNameChange(callback: onPlayerNameChangeCallback): void;
-  onGameEnd(): void;
+  onGameEnd(): PromiseLike<void>;
+  onPlayerGameStateChange(playerGameState: PlayerGameState): void;
 }
